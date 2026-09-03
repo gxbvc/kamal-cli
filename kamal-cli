@@ -1,0 +1,95 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+# Run a local .rb through production `bin/rails runner` without quoting it
+# through Kamal. File bytes go on stdin. No cp in v1.
+# ponytail: stdin via argv-array system + Tempfiles; Open3.capture3 stdin_data hung on GBX ssh.
+
+require "json"
+require "tempfile"
+
+USAGE = <<~TEXT
+  Usage:
+    kamal-cli runner FILE.rb
+
+  Run from a Rails app cwd (needs config/deploy.yml). Pipes FILE to:
+    bundle exec kamal app exec --interactive --reuse -- bin/rails runner -
+TEXT
+
+CHATTER = [
+  /\AGet current version of running container/,
+  /\ALaunching interactive command with version /
+].freeze
+
+def emit_ok(data)
+  $stdout.puts JSON.generate({ "ok" => true, "data" => data })
+  0
+end
+
+def emit_err(message, code)
+  $stdout.puts JSON.generate({ "ok" => false, "error" => message, "code" => code })
+  1
+end
+
+def strip_chatter(text)
+  host = nil
+  lines = text.to_s.lines
+  while lines.any? && CHATTER.any? { |re| re.match?(lines.first) }
+    if (match = lines.first.match(/ on (\S+?)\s*$/))
+      host = match[1].sub(/\.+\z/, "")
+    end
+    lines.shift
+  end
+  [lines.join, host]
+end
+
+def runner(path)
+  unless File.file?("config/deploy.yml")
+    return emit_err("run from a Rails app cwd (missing config/deploy.yml)", "NOT_RAILS_APP_CWD")
+  end
+  unless File.file?(path)
+    return emit_err("file not found: #{path}", "NOT_FOUND")
+  end
+
+  out = Tempfile.new("kamal-cli-out")
+  err = Tempfile.new("kamal-cli-err")
+  begin
+    bundle = ENV["KAMAL_CLI_BUNDLE"] || "bundle"
+    File.open(path, "r") do |stdin_file|
+      system(
+        bundle, "exec", "kamal", "app", "exec",
+        "--interactive", "--reuse", "--",
+        "bin/rails", "runner", "-",
+        in: stdin_file,
+        out: out,
+        err: err
+      )
+    end
+    status = $?.nil? ? 1 : $?.exitstatus
+    stdout, host = strip_chatter(File.read(out.path))
+    stderr = File.read(err.path)
+    data = { "exit" => status, "stdout" => stdout, "stderr" => stderr }
+    data["host"] = host if host
+    if status.zero?
+      emit_ok(data)
+    else
+      msg = stdout.strip.empty? ? (stderr.strip.empty? ? "kamal runner failed" : stderr.strip) : stdout.strip
+      emit_err(msg, "RUNNER_FAILED")
+    end
+  ensure
+    out.close!
+    err.close!
+  end
+end
+
+def main(argv)
+  if argv.empty? || argv[0] == "-h" || argv[0] == "--help" || argv[0] == "help"
+    $stdout.print USAGE
+    return 0
+  end
+  unless argv[0] == "runner" && argv[1]
+    return emit_err("usage: kamal-cli runner FILE.rb", "USAGE")
+  end
+  runner(argv[1])
+end
+
+exit(main(ARGV))

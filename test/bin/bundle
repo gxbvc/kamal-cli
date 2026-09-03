@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+dir="${KAMAL_CLI_TEST_DIR:?}"
+printf '%s\n' "$@" > "$dir/argv"
+cat > "$dir/stdin"
+if [[ "${KAMAL_CLI_TEST_FAIL:-}" == "1" ]]; then
+  echo "Launching interactive command with version abc on 10.0.0.1" >&2
+  echo "boom" >&2
+  exit 17
+fi
+echo "Get current version of running container..."
+echo "Launching interactive command with version abc on 10.0.0.1"
+echo "ok-stdout"
