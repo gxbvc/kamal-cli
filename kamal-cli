@@ -16,6 +16,7 @@ USAGE = <<~TEXT
 TEXT
 
 CHATTER = [
+  /\A\s*INFO /,
   /\AGet current version of running container/,
   /\ALaunching interactive command with version /
 ].freeze

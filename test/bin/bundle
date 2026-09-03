@@ -8,6 +8,8 @@ if [[ "${KAMAL_CLI_TEST_FAIL:-}" == "1" ]]; then
   echo "boom" >&2
   exit 17
 fi
+echo "  INFO [deadbeef] Running docker ps on 10.0.0.1"
+echo "  INFO [deadbeef] Finished in 1.4 seconds with exit status 0 (successful)."
 echo "Get current version of running container..."
-echo "Launching interactive command with version abc on 10.0.0.1"
+echo "Launching interactive command with version abc via SSH from existing container on 10.0.0.1..."
 echo "ok-stdout"
