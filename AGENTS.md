@@ -12,7 +12,7 @@ kamal-cli redeploy [KAMAL ARGS...]   # e.g. -P --version abc123
 kamal-cli deploy [KAMAL ARGS...]
 ```
 
-`deploy` and `redeploy` run `bundle exec kamal deploy|redeploy ARGS`, save the whole log under `$TMPDIR/kamal-cli/`, and print plain text: the last 30 lines and the log path on success, the whole log on failure. The exit code is Kamal's. Use them instead of raw `bundle exec kamal deploy` so agent context stays small.
+`deploy` and `redeploy` run `bundle exec kamal deploy|redeploy ARGS`, save the whole log under `$TMPDIR/kamal-cli/`, and print plain text: the last 30 lines and the log path on success, the whole log on failure. The exit code is Kamal's. Without a Gemfile in cwd they call the global `kamal`. Use them instead of raw `bundle exec kamal deploy` so agent context stays small.
 
 JSON: `{"ok":true,"data":{"exit":0,"stdout":"...","stderr":"...","host":"..."}}` or `{"ok":false,"error":"...","code":"..."}`.
 

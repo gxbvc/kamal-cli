@@ -101,8 +101,9 @@ def deploy(command, args)
   FileUtils.mkdir_p(log_dir)
   stamp = Time.now.strftime("%Y%m%d-%H%M%S")
   log = File.join(log_dir, "#{File.basename(Dir.pwd)}-#{command}-#{stamp}.log")
-  bundle = ENV["KAMAL_CLI_BUNDLE"] || "bundle"
-  system(bundle, "exec", "kamal", command, *args, in: File::NULL, out: log, err: [:child, :out])
+  # Apps without a Gemfile (diagram) use the global kamal.
+  kamal = File.file?("Gemfile") || ENV["KAMAL_CLI_BUNDLE"] ? [ENV["KAMAL_CLI_BUNDLE"] || "bundle", "exec", "kamal"] : ["kamal"]
+  system(*kamal, command, *args, in: File::NULL, out: log, err: [:child, :out])
   status = $?.nil? ? 1 : $?.exitstatus
   lines = File.readlines(log)
   if status.zero?
