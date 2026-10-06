@@ -4,16 +4,26 @@
 # through Kamal. File bytes go on stdin. No cp in v1.
 # ponytail: stdin via argv-array system + Tempfiles; Open3.capture3 stdin_data hung on GBX ssh.
 
+require "fileutils"
 require "json"
 require "tempfile"
+require "tmpdir"
 
 USAGE = <<~TEXT
   Usage:
     kamal-cli runner FILE.rb
+    kamal-cli deploy [KAMAL ARGS...]
+    kamal-cli redeploy [KAMAL ARGS...]
 
-  Run from a Rails app cwd (needs config/deploy.yml). Pipes FILE to:
+  Run from a Rails app cwd (needs config/deploy.yml).
+  runner pipes FILE to:
     bundle exec kamal app exec --interactive --reuse -- bin/rails runner -
+  deploy and redeploy run `bundle exec kamal deploy|redeploy ARGS` and save
+  the whole log to a file. On success they print the last 30 lines and the
+  log path. On failure they print the whole log. The exit code is Kamal's.
 TEXT
+
+DEPLOY_TAIL = 30
 
 CHATTER = [
   /\A\s*INFO /,
@@ -82,11 +92,35 @@ def runner(path)
   end
 end
 
+def deploy(command, args)
+  unless File.file?("config/deploy.yml")
+    return emit_err("run from a Rails app cwd (missing config/deploy.yml)", "NOT_RAILS_APP_CWD")
+  end
+
+  log_dir = File.join(Dir.tmpdir, "kamal-cli")
+  FileUtils.mkdir_p(log_dir)
+  stamp = Time.now.strftime("%Y%m%d-%H%M%S")
+  log = File.join(log_dir, "#{File.basename(Dir.pwd)}-#{command}-#{stamp}.log")
+  bundle = ENV["KAMAL_CLI_BUNDLE"] || "bundle"
+  system(bundle, "exec", "kamal", command, *args, in: File::NULL, out: log, err: [:child, :out])
+  status = $?.nil? ? 1 : $?.exitstatus
+  lines = File.readlines(log)
+  if status.zero?
+    $stdout.print lines.last(DEPLOY_TAIL).join
+    $stdout.puts "kamal-cli: #{command} ok (exit 0). Showing the last #{DEPLOY_TAIL} of #{lines.size} lines. Full log: #{log}"
+  else
+    $stdout.print lines.join
+    $stdout.puts "kamal-cli: #{command} FAILED (exit #{status}). Full log: #{log}"
+  end
+  status
+end
+
 def main(argv)
   if argv.empty? || argv[0] == "-h" || argv[0] == "--help" || argv[0] == "help"
     $stdout.print USAGE
     return 0
   end
+  return deploy(argv[0], argv[1..]) if %w[deploy redeploy].include?(argv[0])
   unless argv[0] == "runner" && argv[1]
     return emit_err("usage: kamal-cli runner FILE.rb", "USAGE")
   end

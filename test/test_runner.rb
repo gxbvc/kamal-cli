@@ -44,7 +44,29 @@ out, _err, code = run_cli(cli, "runner", "script.rb")
 payload = JSON.parse(out)
 abort payload.inspect unless code == 1 && payload["ok"] == false && payload["code"] == "RUNNER_FAILED"
 
+ENV.delete("KAMAL_CLI_TEST_FAIL")
+ENV["KAMAL_CLI_TEST_LINES"] = "100"
+out, _err, code = run_cli(cli, "redeploy", "-P", "--version", "abc")
+abort out unless code == 0
+abort out unless File.read(File.join(dir, "argv")).split == %w[exec kamal redeploy -P --version abc]
+abort out if out.include?("line 70\n")
+abort out unless out.include?("line 71\n") && out.include?("line 100\n")
+abort out unless out.include?("redeploy ok") && out.include?("Full log: ")
+log = out[/Full log: (\S+)/, 1]
+abort out unless File.readlines(log).size == 100
+
+ENV["KAMAL_CLI_TEST_FAIL"] = "1"
+out, _err, code = run_cli(cli, "deploy")
+abort out unless code == 17
+abort out unless out.include?("line 1\n") && out.include?("boom") && out.include?("deploy FAILED (exit 17)")
+ENV.delete("KAMAL_CLI_TEST_FAIL")
+ENV.delete("KAMAL_CLI_TEST_LINES")
+
 Dir.chdir(dir)
+out, _err, code = run_cli(cli, "deploy")
+payload = JSON.parse(out)
+abort payload.inspect unless code == 1 && payload["code"] == "NOT_RAILS_APP_CWD"
+
 out, _err, code = run_cli(cli, "runner", File.join(app, "script.rb"))
 payload = JSON.parse(out)
 abort payload.inspect unless code == 1 && payload["code"] == "NOT_RAILS_APP_CWD"

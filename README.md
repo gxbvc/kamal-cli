@@ -16,6 +16,10 @@ From a Rails app checkout:
 
 ```bash
 kamal-cli runner /tmp/count.rb
+kamal-cli redeploy      # quiet bundle exec kamal redeploy
+kamal-cli deploy        # quiet bundle exec kamal deploy
 ```
+
+`deploy` and `redeploy` keep the whole log in a file. On success they print the last 30 lines and the log path; on failure, the whole log.
 
 `cp` into the container is deferred. If you need a non-runner file on the host, scp to the server then `docker cp` on the host. `docker cp host:container` is not valid.

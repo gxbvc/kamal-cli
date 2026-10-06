@@ -3,10 +3,16 @@ set -euo pipefail
 dir="${KAMAL_CLI_TEST_DIR:?}"
 printf '%s\n' "$@" > "$dir/argv"
 cat > "$dir/stdin"
+if [[ -n "${KAMAL_CLI_TEST_LINES:-}" ]]; then
+  for i in $(seq 1 "$KAMAL_CLI_TEST_LINES"); do echo "line $i"; done
+fi
 if [[ "${KAMAL_CLI_TEST_FAIL:-}" == "1" ]]; then
   echo "Launching interactive command with version abc on 10.0.0.1" >&2
   echo "boom" >&2
   exit 17
+fi
+if [[ -n "${KAMAL_CLI_TEST_LINES:-}" ]]; then
+  exit 0
 fi
 echo "  INFO [deadbeef] Running docker ps on 10.0.0.1"
 echo "  INFO [deadbeef] Finished in 1.4 seconds with exit status 0 (successful)."
