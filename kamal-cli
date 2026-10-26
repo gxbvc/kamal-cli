@@ -12,8 +12,7 @@ require "tmpdir"
 USAGE = <<~TEXT
   Usage:
     kamal-cli runner FILE.rb
-    kamal-cli deploy [KAMAL ARGS...]
-    kamal-cli redeploy [KAMAL ARGS...]
+    kamal-cli deploy|redeploy|rollback|setup [KAMAL ARGS...]
 
   Run from a Rails app cwd (needs config/deploy.yml).
   runner pipes FILE to:
@@ -21,7 +20,18 @@ USAGE = <<~TEXT
   deploy and redeploy run `bundle exec kamal deploy|redeploy ARGS` and save
   the whole log to a file. On success they print the last 30 lines and the
   log path. On failure they print the whole log. The exit code is Kamal's.
+  rollback and setup run the same way.
+
+  Every deploy, redeploy, rollback and setup (ok or failed) writes one SOC 2
+  deploy line with hq bin/soc2-event (app, command, result, commit, dirty
+  tree, log name, seconds; approved-by = env KAMAL_APPROVAL_REF or "none")
+  and keeps a copy of the log in ~/projects/hq/state/deploy-logs (0700, not
+  committed). A failure there never changes the exit code.
 TEXT
+
+DEPLOY_COMMANDS = %w[deploy redeploy rollback setup].freeze
+SOC2_EVENT = ENV["KAMAL_CLI_SOC2_EVENT"] || File.join(Dir.home, "projects/hq/bin/soc2-event")
+KEEP_LOG_DIR = ENV["KAMAL_CLI_KEEP_LOG_DIR"] || File.join(Dir.home, "projects/hq/state/deploy-logs")
 
 DEPLOY_TAIL = 30
 
@@ -103,8 +113,10 @@ def deploy(command, args)
   log = File.join(log_dir, "#{File.basename(Dir.pwd)}-#{command}-#{stamp}.log")
   # Apps without a Gemfile (diagram) use the global kamal.
   kamal = File.file?("Gemfile") || ENV["KAMAL_CLI_BUNDLE"] ? [ENV["KAMAL_CLI_BUNDLE"] || "bundle", "exec", "kamal"] : ["kamal"]
+  started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   system(*kamal, command, *args, in: File::NULL, out: log, err: [:child, :out])
   status = $?.nil? ? 1 : $?.exitstatus
+  seconds = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round
   lines = File.readlines(log)
   if status.zero?
     $stdout.print lines.last(DEPLOY_TAIL).join
@@ -113,7 +125,41 @@ def deploy(command, args)
     $stdout.print lines.join
     $stdout.puts "kamal-cli: #{command} FAILED (exit #{status}). Full log: #{log}"
   end
+  record_deploy(command, status, log, seconds)
   status
+end
+
+# Security, Oct 26: every deploy writes its own SOC 2 line, so no one records
+# deploys from memory. Never changes the exit code.
+def record_deploy(command, status, log, seconds)
+  keep_log(log)
+  # The Kamal service name (worktrees have other folder names); the folder name if there is none.
+  service = File.foreach("config/deploy.yml").lazy.map { |l| l[/\Aservice:\s*["']?([\w.-]+)/, 1] }.find(&:itself) rescue nil
+  app = service || File.basename(Dir.pwd)
+  sha = IO.popen(["git", "rev-parse", "--short=8", "HEAD"], err: File::NULL, &:read).to_s.strip
+  sha = "nogit" if sha.empty?
+  dirty = IO.popen(["git", "status", "--porcelain"], err: File::NULL, &:read).to_s.strip.empty? ? "" : "+dirty"
+  result = status.zero? ? "ok" : "FAILED exit #{status}"
+  ref = ENV["KAMAL_APPROVAL_REF"].to_s.strip
+  ref = "none" if ref.empty?
+  stamp = File.basename(log)[/(\d{8}-\d{6})\.log\z/, 1] || "unknown"
+  summary = "#{command} #{result} commit #{sha}#{dirty} log #{stamp} #{seconds}s"
+  ok = system(SOC2_EVENT, "add", "--kind", "deploy", "--system", app, "--summary", summary,
+              "--approved-by", ref, "--by", "kamal-cli", out: File::NULL, err: File::NULL)
+  $stdout.puts(ok ? "kamal-cli: recorded deploy event" : "kamal-cli: event NOT recorded")
+rescue StandardError
+  $stdout.puts "kamal-cli: event NOT recorded"
+end
+
+# A copy outside $TMPDIR (macOS cleans it). Runs first, so a git or event failure cannot skip it.
+def keep_log(log)
+  FileUtils.mkdir_p(KEEP_LOG_DIR, mode: 0o700)
+  File.chmod(0o700, KEEP_LOG_DIR)
+  kept = File.join(KEEP_LOG_DIR, File.basename(log))
+  FileUtils.cp(log, kept)
+  File.chmod(0o600, kept)
+rescue StandardError
+  $stdout.puts "kamal-cli: log copy NOT kept"
 end
 
 def main(argv)
@@ -121,7 +167,7 @@ def main(argv)
     $stdout.print USAGE
     return 0
   end
-  return deploy(argv[0], argv[1..]) if %w[deploy redeploy].include?(argv[0])
+  return deploy(argv[0], argv[1..]) if DEPLOY_COMMANDS.include?(argv[0])
   unless argv[0] == "runner" && argv[1]
     return emit_err("usage: kamal-cli runner FILE.rb", "USAGE")
   end
