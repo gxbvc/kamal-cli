@@ -5,6 +5,7 @@
 # ponytail: stdin via argv-array system + Tempfiles; Open3.capture3 stdin_data hung on GBX ssh.
 
 require "fileutils"
+require "open3"
 require "json"
 require "tempfile"
 require "tmpdir"
@@ -144,9 +145,16 @@ def record_deploy(command, status, log, seconds)
   ref = "none" if ref.empty?
   stamp = File.basename(log)[/(\d{8}-\d{6})\.log\z/, 1] || "unknown"
   summary = "#{command} #{result} commit #{sha}#{dirty} log #{stamp} #{seconds}s"
-  ok = system(SOC2_EVENT, "add", "--kind", "deploy", "--system", app, "--summary", summary,
-              "--approved-by", ref, "--by", "kamal-cli", out: File::NULL, err: File::NULL)
-  $stdout.puts(ok ? "kamal-cli: recorded deploy event" : "kamal-cli: event NOT recorded")
+  out, st = Open3.capture2e(SOC2_EVENT, "add", "--kind", "deploy", "--system", app, "--summary", summary,
+                            "--approved-by", ref, "--by", "kamal-cli")
+  if st.success?
+    $stdout.puts "kamal-cli: recorded deploy event"
+  else
+    # soc2-event's refusal is fixed text naming the field (for example a full 40-character SHA in
+    # KAMAL_APPROVAL_REF); long runs are masked anyway.
+    why = out.lines.map(&:strip).reject(&:empty?).last.to_s.gsub(/[A-Za-z0-9+\/_=-]{20,}/, "[long]")[0, 160]
+    $stdout.puts "kamal-cli: event NOT recorded (soc2-event: #{why.empty? ? 'no reason given' : why})"
+  end
 rescue StandardError
   $stdout.puts "kamal-cli: event NOT recorded"
 end

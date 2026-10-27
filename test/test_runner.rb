@@ -81,7 +81,7 @@ ENV.delete("KAMAL_APPROVAL_REF")
 # A broken event call never changes the exit code
 ENV["KAMAL_CLI_TEST_SOC2_FAIL"] = "1"
 out, _err, code = run_cli(cli, "redeploy")
-abort out unless code == 0 && out.include?("kamal-cli: event NOT recorded")
+abort out unless code == 0 && out.include?("kamal-cli: event NOT recorded (soc2-event: refused: approved_by contains a long token-like string)")
 ENV.delete("KAMAL_CLI_TEST_SOC2_FAIL")
 ENV["KAMAL_CLI_SOC2_EVENT"], saved = File.join(dir, "no-such-soc2-event"), ENV["KAMAL_CLI_SOC2_EVENT"]
 out, _err, code = run_cli(cli, "redeploy")

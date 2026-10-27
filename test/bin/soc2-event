@@ -2,5 +2,5 @@
 # Test stub for hq bin/soc2-event: records its argv; KAMAL_CLI_TEST_SOC2_FAIL=1 makes it fail.
 dir="${KAMAL_CLI_TEST_DIR:?}"
 printf '%s\n' "$@" > "$dir/soc2-argv"
-[[ "${KAMAL_CLI_TEST_SOC2_FAIL:-}" == "1" ]] && exit 3
+[[ "${KAMAL_CLI_TEST_SOC2_FAIL:-}" == "1" ]] && { echo "refused: approved_by contains a long token-like string" >&2; exit 3; }
 exit 0
