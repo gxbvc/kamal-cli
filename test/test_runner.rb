@@ -102,6 +102,84 @@ ENV.delete("KAMAL_CLI_TEST_SOC2_FAIL")
 ENV.delete("KAMAL_CLI_TEST_FAIL")
 ENV.delete("KAMAL_CLI_TEST_LINES")
 
+# Registry logout after a good deploy/redeploy/rollback (Security, Oct 28)
+logout_argv = File.join(dir, "logout-argv")
+logout_calls = lambda do
+  calls = File.exist?(logout_argv) ? File.read(logout_argv).split("\n") : []
+  FileUtils.rm_f(logout_argv)
+  calls
+end
+abort "logout ran without KAMAL_CLI_REGISTRY_LOGOUT=1" unless logout_calls.call.empty? # the tests above ran with no env
+
+# Off by default: no env (or not "1") means no logout call
+[nil, "0", "true"].each do |val|
+  val ? ENV["KAMAL_CLI_REGISTRY_LOGOUT"] = val : ENV.delete("KAMAL_CLI_REGISTRY_LOGOUT")
+  out, _err, code = run_cli(cli, "deploy")
+  abort out unless code == 0 && logout_calls.call.empty? && !out.include?("registry_logout")
+end
+ENV["KAMAL_CLI_REGISTRY_LOGOUT"] = "1"
+
+no_registry_text = ->(o) { abort o if o.include?("ghcr.io") || o.include?("REGISTRY-SECRET") || o.include?("docker logout") }
+
+%w[deploy redeploy rollback].each do |cmd|
+  out, _err, code = run_cli(cli, cmd, "-d", "staging", "--version", "abc")
+  abort out unless code == 0
+  calls = logout_calls.call
+  abort calls.inspect unless calls == %w[exec kamal registry logout -L -d staging]
+  abort out unless out.include?('kamal-cli: registry_logout: {"status":"ok","hosts":["104.131.24.46","10.0.0.2"]}')
+  no_registry_text.call(out)
+end
+
+# setup never logs out
+out, _err, code = run_cli(cli, "setup")
+abort out unless code == 0 && logout_calls.call.empty? && !out.include?("registry_logout")
+
+# -c and --destination= pass through
+out, _err, code = run_cli(cli, "deploy", "-c", "config/other.yml", "--destination=prod")
+abort out unless code == 0
+calls = logout_calls.call
+abort calls.inspect unless calls == %w[exec kamal registry logout -L -c config/other.yml --destination=prod]
+
+# A failed logout is reported and the deploy still counts as ok
+ENV["KAMAL_CLI_TEST_LOGOUT_FAIL"] = "1"
+out, _err, code = run_cli(cli, "redeploy")
+abort out unless code == 0 && out.include?("redeploy ok")
+abort out unless logout_calls.call == %w[exec kamal registry logout -L] # one call, no retry
+abort out unless out.include?('kamal-cli: registry_logout: {"status":"failed","hosts":["104.131.24.46","10.0.0.2"],"exit":1,"failed_hosts":["10.0.0.2"]}')
+no_registry_text.call(out)
+ENV.delete("KAMAL_CLI_TEST_LOGOUT_FAIL")
+
+# A failed deploy runs no logout
+ENV["KAMAL_CLI_TEST_FAIL"] = "1"
+out, _err, code = run_cli(cli, "deploy")
+abort out unless code == 17 && logout_calls.call.empty? && !out.include?("registry_logout")
+ENV.delete("KAMAL_CLI_TEST_FAIL")
+
+# Law: no logout when the law server shows up in deploy.yml, the destination
+# file, the args or the deploy log
+law = "65.108.76.113"
+[
+  -> { File.write("config/deploy.yml", "servers:\n  web:\n    - #{law}\n"); [] },
+  -> { File.write("config/deploy.law.yml", "servers:\n  - #{law}\n"); %w[-d law] },
+  -> { ["--hosts", law] },
+  -> { ENV["KAMAL_CLI_TEST_HOST"] = law; [] }
+].each do |setup_case|
+  args = setup_case.call
+  out, _err, code = run_cli(cli, "deploy", *args)
+  abort out unless code == 0 && out.include?("kamal-cli: registry_logout: skipped (law)")
+  abort out unless logout_calls.call.empty?
+  File.write("config/deploy.yml", "")
+  FileUtils.rm_f("config/deploy.law.yml")
+  ENV.delete("KAMAL_CLI_TEST_HOST")
+end
+
+# Another destination's file with the law IP does not block a non-law deploy
+File.write("config/deploy.law.yml", "servers:\n  - #{law}\n")
+out, _err, code = run_cli(cli, "deploy", "-d", "staging")
+abort out unless code == 0 && logout_calls.call == %w[exec kamal registry logout -L -d staging]
+FileUtils.rm_f("config/deploy.law.yml")
+ENV.delete("KAMAL_CLI_REGISTRY_LOGOUT")
+
 Dir.chdir(dir)
 out, _err, code = run_cli(cli, "deploy")
 payload = JSON.parse(out)

@@ -23,3 +23,4 @@ Do not use `kamal app exec bin/rails runner '...'`. Do not scp a runner file. `c
 - Bytes of FILE go on stdin to `bundle exec kamal app exec --interactive --reuse -- bin/rails runner -`.
 - Needs `config/deploy.yml` in cwd.
 - Kamal chatter is stripped from stdout. Script output is in `data.stdout`.
+- Only with `KAMAL_CLI_REGISTRY_LOGOUT=1` (off by default for now): after a good `deploy`, `redeploy` or `rollback`, it runs `kamal registry logout -L` (hosts only; never drop `-L`, or the Mac loses its push login) and prints `kamal-cli: registry_logout: {"status":"ok"|"failed","hosts":[...]}`. A failed logout never changes the exit code. Law server (65.108.76.113) apps print `registry_logout: skipped (law)` and run no logout.

@@ -28,9 +28,18 @@ USAGE = <<~TEXT
   tree, log name, seconds; approved-by = env KAMAL_APPROVAL_REF or "none")
   and keeps a copy of the log in ~/projects/hq/state/deploy-logs (0700, not
   committed). A failure there never changes the exit code.
+
+  With KAMAL_CLI_REGISTRY_LOGOUT=1 (off by default for now), after a good
+  deploy, redeploy or rollback it runs
+  `kamal registry logout -L` (hosts only, never this Mac) with the same
+  -d/-c flags, and prints one line: registry_logout status and host names.
+  A failed logout never changes the exit code. Apps on the law server
+  (65.108.76.113) are skipped: "registry_logout: skipped (law)".
 TEXT
 
 DEPLOY_COMMANDS = %w[deploy redeploy rollback setup].freeze
+LOGOUT_COMMANDS = %w[deploy redeploy rollback].freeze
+LAW_HOSTS = %w[65.108.76.113].freeze
 SOC2_EVENT = ENV["KAMAL_CLI_SOC2_EVENT"] || File.join(Dir.home, "projects/hq/bin/soc2-event")
 KEEP_LOG_DIR = ENV["KAMAL_CLI_KEEP_LOG_DIR"] || File.join(Dir.home, "projects/hq/state/deploy-logs")
 
@@ -127,7 +136,77 @@ def deploy(command, args)
     $stdout.puts "kamal-cli: #{command} FAILED (exit #{status}). Full log: #{log}"
   end
   record_deploy(command, status, log, seconds)
+  if status.zero? && LOGOUT_COMMANDS.include?(command) && ENV["KAMAL_CLI_REGISTRY_LOGOUT"] == "1"
+    registry_logout(kamal, args, log)
+  end
   status
+end
+
+# Security, Oct 28: the deploy writes the registry password into each host's
+# ~/.docker/config.json. After a good deploy the pull is done, so log the hosts
+# out. Off unless KAMAL_CLI_REGISTRY_LOGOUT=1 until the first live use on one
+# app. -L keeps this Mac logged in for the next push. Never changes the exit
+# code, no retry, and only host names and ok/failed are printed (the output
+# carries registry text).
+def registry_logout(kamal, args, log)
+  if law_deploy?(args, log)
+    $stdout.puts "kamal-cli: registry_logout: skipped (law)"
+    return
+  end
+  out = Tempfile.new("kamal-cli-logout")
+  begin
+    system(*kamal, "registry", "logout", "-L", *config_flags(args), in: File::NULL, out: out, err: [:child, :out])
+    status = $?.nil? ? 1 : $?.exitstatus
+    text = File.read(out.path)
+  ensure
+    out.close!
+  end
+  hosts = text.scan(/^\s*INFO \[\w+\] Running .* on ([\w.-]+?)\.*$/).flatten.uniq
+  result = { "status" => status.zero? ? "ok" : "failed", "hosts" => hosts }
+  unless status.zero?
+    result["exit"] = status
+    failed = text.scan(/executing on host ([\w.-]+?)\.*:/).flatten.uniq
+    result["failed_hosts"] = failed if failed.any?
+  end
+  $stdout.puts "kamal-cli: registry_logout: #{JSON.generate(result)}"
+rescue StandardError
+  $stdout.puts "kamal-cli: registry_logout: #{JSON.generate({ 'status' => 'failed', 'hosts' => [] })}"
+end
+
+# The -d/--destination and -c/--config-file flags from the deploy args, so the
+# logout reaches the same hosts.
+def config_flags(args)
+  flags = []
+  args.each_with_index do |arg, i|
+    case arg
+    when "-d", "--destination", "-c", "--config-file"
+      flags.push(arg, args[i + 1]) if args[i + 1]
+    when /\A(-d|-c).+/, /\A--(destination|config-file)=/
+      flags << arg
+    end
+  end
+  flags
+end
+
+# Fails closed: the law IP in the args, the deploy config (base, destination
+# or -c file) or the deploy log (Kamal names each host it ran on) means law.
+def law_deploy?(args, log)
+  flags = config_flags(args)
+  value = lambda do |short, long|
+    i = flags.index(short) || flags.index(long)
+    next flags[i + 1] if i
+    flags.find { |f| f.start_with?("#{long}=") }&.split("=", 2)&.last ||
+      flags.find { |f| f.start_with?(short) && f.size > 2 }&.slice(2..)
+  end
+  base = value.call("-c", "--config-file") || "config/deploy.yml"
+  dest = value.call("-d", "--destination")
+  files = ["config/deploy.yml", base]
+  files << base.sub(/\.yml\z/, ".#{dest}.yml") if dest
+  texts = [args.join(" "), File.read(log)]
+  texts += files.uniq.select { |f| File.file?(f) }.map { |f| File.read(f) }
+  texts.any? { |t| LAW_HOSTS.any? { |h| t.include?(h) } }
+rescue StandardError
+  true
 end
 
 # Security, Oct 26: every deploy writes its own SOC 2 line, so no one records
