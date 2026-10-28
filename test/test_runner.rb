@@ -180,6 +180,38 @@ abort out unless code == 0 && logout_calls.call == %w[exec kamal registry logout
 FileUtils.rm_f("config/deploy.law.yml")
 ENV.delete("KAMAL_CLI_REGISTRY_LOGOUT")
 
+# gxbee builder guard (Security, Oct 28 #4700): refuse before kamal runs.
+allow = File.join(dir, "app-allowlist.md")
+ENV["KAMAL_CLI_GXBEE_ALLOWLIST"] = allow
+File.write(allow, "| App | PHI or law | Check result | Status | Security OK |\n|---|---|---|---|---|\n| roadmap | no | PASS | ALLOWED | yes |\n| other | no | PASS | NOT YET | |\n")
+argv_file = File.join(dir, "argv")
+guard = lambda do |deploy_yml|
+  File.write("config/deploy.yml", deploy_yml)
+  FileUtils.rm_f(argv_file)
+  out, _err, code = run_cli(cli, "deploy")
+  [out, code, File.exist?(argv_file)]
+end
+out, code, ran = guard.call("service: other\nbuilder:\n  arch: amd64\n  remote: ssh://gxbbuild@gxbee.tail478d01.ts.net\n")
+abort "not-allowed app: #{out}" unless code == 1 && out.include?("GXBEE_BUILDER_REFUSED") && out.include?("not ALLOWED") && !ran
+out, code, ran = guard.call("service: roadmap\nbuilder:\n  remote: ssh://gxbbuild@gxbee\n")
+abort "allowed app refused: #{out}" unless code == 0 && ran
+out, code, ran = guard.call("service: roadmap\nservers:\n  - 65.108.76.113\nbuilder:\n  remote: ssh://gxbbuild@gxbee\n")
+abort "law app ran: #{out}" unless code == 1 && out.include?("law app") && !ran
+out, code, ran = guard.call("service: roadmap\nbuilder:\n  remote: ssh://gxbbuild@gxbee-evil.example\n")
+abort "lookalike host treated as gxbee: #{out}" unless code == 0 && ran
+ENV["KAMAL_CLI_GXBEE_ALLOWLIST"] = File.join(dir, "missing-allowlist.md")
+out, code, ran = guard.call("service: roadmap\nbuilder:\n  remote: ssh://gxbbuild@gxbee\n")
+abort "unreadable allowlist did not fail closed: #{out}" unless code == 1 && out.include?("check failed") && !ran
+out, code, ran = guard.call("service: roadmap\nbuilder:\n  remote: ssh://root@104.131.24.46\n")
+abort "non-gxbee remote blocked: #{out}" unless code == 0 && ran
+ENV["KAMAL_CLI_GXBEE_ALLOWLIST"] = allow
+ENV["DOCKER_HOST"] = "ssh://gxbbuild@gxbee.tail478d01.ts.net"
+out, code, ran = guard.call("service: roadmap\n")
+abort "DOCKER_HOST=gxbee not refused: #{out}" unless code == 1 && out.include?("DOCKER_HOST names gxbee") && !ran
+ENV.delete("DOCKER_HOST")
+ENV.delete("KAMAL_CLI_GXBEE_ALLOWLIST")
+File.write("config/deploy.yml", "")
+
 Dir.chdir(dir)
 out, _err, code = run_cli(cli, "deploy")
 payload = JSON.parse(out)

@@ -116,6 +116,8 @@ def deploy(command, args)
   unless File.file?("config/deploy.yml")
     return emit_err("run from a Rails app cwd (missing config/deploy.yml)", "NOT_RAILS_APP_CWD")
   end
+  refusal = gxbee_builder_refusal(args)
+  return emit_err(refusal, "GXBEE_BUILDER_REFUSED") if refusal
 
   log_dir = File.join(Dir.tmpdir, "kamal-cli")
   FileUtils.mkdir_p(log_dir)
@@ -140,6 +142,49 @@ def deploy(command, args)
     registry_logout(kamal, args, log)
   end
   status
+end
+
+# Security, Oct 28 (#4700): an app may build on gxbee only when it is ALLOWED in
+# Cloud's builder-home/app-allowlist.md, and never a law app. Checked before
+# kamal runs. Host names are compared exactly; an unreadable allowlist or deploy
+# config fails closed. Returns nil when the deploy may go on.
+GXBEE_BUILDER_HOSTS = %w[gxbee gxbee.tail478d01.ts.net].freeze
+# The path is fixed; the override is read only in the test run (KAMAL_CLI_TEST_DIR set by test/run.sh).
+GXBEE_ALLOWLIST = (ENV["KAMAL_CLI_TEST_DIR"] && ENV["KAMAL_CLI_GXBEE_ALLOWLIST"]) || File.join(Dir.home, "projects/cloud/builder-home/app-allowlist.md")
+
+def gxbee_builder_refusal(args)
+  texts = deploy_config_files(args).map { |f| File.read(f) }
+  remotes = texts.flat_map { |t| t.scan(/^\s*remote:\s*["']?([^\s"'#]+)/).flatten }
+  hosts = remotes.map { |r| r.sub(%r{\Assh://}, "").sub(/\A[^@]*@/, "").sub(/[:\/].*\z/, "") }
+  docker_host = ENV["DOCKER_HOST"].to_s.sub(%r{\A\w+://}, "").sub(/\A[^@]*@/, "").sub(/[:\/].*\z/, "")
+  return "gxbee builder refused: DOCKER_HOST names gxbee" if GXBEE_BUILDER_HOSTS.include?(docker_host)
+  return nil unless hosts.any? { |h| GXBEE_BUILDER_HOSTS.include?(h) }
+  return "gxbee builder refused: law app" if texts.any? { |t| LAW_HOSTS.any? { |h| t.include?(h) } } || LAW_HOSTS.any? { |h| args.join(" ").include?(h) }
+  service = texts.first[/^service:\s*["']?([\w.-]+)/, 1]
+  return "gxbee builder refused: no service name in config/deploy.yml" unless service
+  allowed = File.readlines(GXBEE_ALLOWLIST).any? do |line|
+    cells = line.split("|").map(&:strip)
+    cells[1] == service && cells[4] == "ALLOWED"
+  end
+  allowed ? nil : "gxbee builder refused: #{service} is not ALLOWED in app-allowlist.md"
+rescue StandardError => e
+  "gxbee builder refused: check failed (#{e.class})"
+end
+
+# config/deploy.yml plus the -c file and the -d destination file, when present.
+def deploy_config_files(args)
+  flags = config_flags(args)
+  value = lambda do |short, long|
+    i = flags.index(short) || flags.index(long)
+    next flags[i + 1] if i
+    flags.find { |f| f.start_with?("#{long}=") }&.split("=", 2)&.last ||
+      flags.find { |f| f.start_with?(short) && f.size > 2 }&.slice(2..)
+  end
+  base = value.call("-c", "--config-file") || "config/deploy.yml"
+  dest = value.call("-d", "--destination")
+  files = ["config/deploy.yml", base]
+  files << base.sub(/\.yml\z/, ".#{dest}.yml") if dest
+  files.uniq.select { |f| File.file?(f) }
 end
 
 # Security, Oct 28: the deploy writes the registry password into each host's
