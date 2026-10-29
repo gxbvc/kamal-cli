@@ -40,6 +40,7 @@ TEXT
 
 DEPLOY_COMMANDS = %w[deploy redeploy rollback setup accessory].freeze
 LOGOUT_COMMANDS = %w[deploy redeploy rollback setup accessory].freeze
+LOGIN_FIRST_COMMANDS = %w[deploy redeploy rollback].freeze
 LAW_HOSTS = %w[65.108.76.113].freeze
 SOC2_EVENT = ENV["KAMAL_CLI_SOC2_EVENT"] || File.join(Dir.home, "projects/hq/bin/soc2-event")
 KEEP_LOG_DIR = ENV["KAMAL_CLI_KEEP_LOG_DIR"] || File.join(Dir.home, "projects/hq/state/deploy-logs")
@@ -127,7 +128,21 @@ def deploy(command, args)
   # Apps without a Gemfile (diagram) use the global kamal.
   kamal = File.file?("Gemfile") || ENV["KAMAL_CLI_BUNDLE"] ? [ENV["KAMAL_CLI_BUNDLE"] || "bundle", "exec", "kamal"] : ["kamal"]
   started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-  system(*kamal, command, *args, in: File::NULL, out: log, err: [:child, :out])
+  # deploy (with a remote builder), redeploy and rollback did not log in on Oct 29; every run now ends with a logout,
+  # so log in first (Mac and hosts). setup and accessory boot log in themselves.
+  if LOGIN_FIRST_COMMANDS.include?(command) && ENV["KAMAL_CLI_REGISTRY_LOGOUT"] != "0"
+    # The login output carries registry text: it goes to a Tempfile that is never printed and is deleted.
+    ok = Tempfile.create("kamal-cli-login") { |t| system(*kamal, "registry", "login", *config_flags(args), in: File::NULL, out: t, err: [:child, :out]) }
+    unless ok
+      File.write(log, "kamal-cli: registry login before #{command} failed (output not kept: registry text)\n")
+      $stdout.puts "kamal-cli: registry login before #{command} FAILED; #{command} not run."
+      record_deploy(command, 1, log, 0)
+      return 1
+    end
+    system(*kamal, command, *args, in: File::NULL, out: log, err: [:child, :out])
+  else
+    system(*kamal, command, *args, in: File::NULL, out: log, err: [:child, :out])
+  end
   status = $?.nil? ? 1 : $?.exitstatus
   seconds = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round
   lines = File.readlines(log)
@@ -194,6 +209,17 @@ end
 # too (no -L): the next push logs in again by itself. Never changes the exit
 # code, no retry, and only host names and ok/failed are printed (the output
 # carries registry text).
+def other_kamal_running?
+  return ENV["KAMAL_CLI_TEST_OTHER_KAMAL"] == "1" if ENV.key?("KAMAL_CLI_TEST_OTHER_KAMAL")
+  out, = Open3.capture2("ps", "-axo", "pid=,command=")
+  out.each_line.any? do |l|
+    pid, cmd = l.strip.split(" ", 2)
+    pid.to_i != Process.pid && cmd.to_s.match?(%r{(^|/)kamal (deploy|redeploy|rollback|setup|build|accessory|app boot)\b})
+  end
+rescue StandardError
+  true # unsure: keep the Mac login, log out the hosts only
+end
+
 def registry_logout(kamal, args, log)
   if law_deploy?(args, log)
     $stdout.puts "kamal-cli: registry_logout: skipped (law)"
@@ -201,14 +227,18 @@ def registry_logout(kamal, args, log)
   end
   out = Tempfile.new("kamal-cli-logout")
   begin
-    system(*kamal, "registry", "logout", *config_flags(args), in: File::NULL, out: out, err: [:child, :out])
+    # Another Kamal run on this Mac may be pushing with the same Mac login: then log out the hosts only (-L),
+    # or that push fails with "denied" (seen Oct 29 12:19). The last run to finish logs the Mac out.
+    others = other_kamal_running?
+    local = others ? ["-L"] : []
+    system(*kamal, "registry", "logout", *local, *config_flags(args), in: File::NULL, out: out, err: [:child, :out])
     status = $?.nil? ? 1 : $?.exitstatus
     text = File.read(out.path)
   ensure
     out.close!
   end
   hosts = text.scan(/^\s*INFO \[\w+\] Running .* on ([\w.-]+?)\.*$/).flatten.uniq
-  result = { "status" => status.zero? ? "ok" : "failed", "hosts" => hosts }
+  result = { "status" => status.zero? ? "ok" : "failed", "hosts" => hosts, "mac" => others ? "kept (another kamal running)" : "logged out" }
   unless status.zero?
     result["exit"] = status
     failed = text.scan(/executing on host ([\w.-]+?)\.*:/).flatten.uniq

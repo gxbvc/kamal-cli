@@ -131,7 +131,7 @@ no_registry_text = ->(o) { abort o if o.include?("ghcr.io") || o.include?("REGIS
   abort out unless code == 0
   calls = logout_calls.call
   abort calls.inspect unless calls == %w[exec kamal registry logout -d staging]
-  abort out unless out.include?('kamal-cli: registry_logout: {"status":"ok","hosts":["104.131.24.46","10.0.0.2"]}')
+  abort out unless out.include?('kamal-cli: registry_logout: {"status":"ok","hosts":["104.131.24.46","10.0.0.2"],"mac":"logged out"}')
   no_registry_text.call(out)
 end
 
@@ -147,7 +147,7 @@ ENV["KAMAL_CLI_TEST_LOGOUT_FAIL"] = "1"
 out, _err, code = run_cli(cli, "redeploy")
 abort out unless code == 0 && out.include?("redeploy ok")
 abort out unless logout_calls.call == %w[exec kamal registry logout] # one call, no retry
-abort out unless out.include?('kamal-cli: registry_logout: {"status":"failed","hosts":["104.131.24.46","10.0.0.2"],"exit":1,"failed_hosts":["10.0.0.2"]}')
+abort out unless out.include?('kamal-cli: registry_logout: {"status":"failed","hosts":["104.131.24.46","10.0.0.2"],"mac":"logged out","exit":1,"failed_hosts":["10.0.0.2"]}')
 no_registry_text.call(out)
 ENV.delete("KAMAL_CLI_TEST_LOGOUT_FAIL")
 
@@ -156,6 +156,32 @@ ENV["KAMAL_CLI_TEST_FAIL"] = "1"
 out, _err, code = run_cli(cli, "deploy")
 abort out unless code == 17 && logout_calls.call == %w[exec kamal registry logout] && out.include?("registry_logout")
 ENV.delete("KAMAL_CLI_TEST_FAIL")
+
+# Another kamal running on this Mac: hosts only (-L), Mac login kept
+ENV["KAMAL_CLI_TEST_OTHER_KAMAL"] = "1"
+out, _err, code = run_cli(cli, "deploy")
+abort out unless code == 0 && logout_calls.call == %w[exec kamal registry logout -L] && out.include?(%q{"mac":"kept (another kamal running)"})
+ENV["KAMAL_CLI_TEST_OTHER_KAMAL"] = "0"
+
+# redeploy and rollback log in first (they do not log in themselves); deploy does not get an extra login
+login_argv = File.join(dir, "login-argv")
+login_calls = lambda { c = File.exist?(login_argv) ? File.read(login_argv).split("\n") : []; FileUtils.rm_f(login_argv); c }
+login_calls.call # drop the logins of the runs above
+%w[deploy redeploy rollback].each do |cmd|
+  out, _err, code = run_cli(cli, cmd, "-d", "staging")
+  abort out unless code == 0 && login_calls.call == %w[exec kamal registry login -d staging]
+  logout_calls.call
+end
+out, _err, code = run_cli(cli, "setup")
+abort out unless code == 0 && login_calls.call.empty?
+logout_calls.call
+# a failed login stops before the redeploy runs
+ENV["KAMAL_CLI_TEST_LOGIN_FAIL"] = "1"
+FileUtils.rm_f(File.join(dir, "argv"))
+out, _err, code = run_cli(cli, "redeploy")
+abort out unless code == 1 && out.include?("registry login before redeploy FAILED") && !File.exist?(File.join(dir, "argv"))
+ENV.delete("KAMAL_CLI_TEST_LOGIN_FAIL")
+login_calls.call; logout_calls.call
 
 # Law: no logout when the law server shows up in deploy.yml, the destination
 # file, the args or the deploy log

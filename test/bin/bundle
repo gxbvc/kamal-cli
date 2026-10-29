@@ -17,6 +17,12 @@ if [[ "${3:-} ${4:-}" == "registry logout" ]]; then
   echo "Removing login credentials for ghcr.io REGISTRY-SECRET-TEXT"
   exit 0
 fi
+if [[ "${3:-} ${4:-}" == "registry login" ]]; then
+  printf '%s\n' "$@" >> "$dir/login-argv"
+  echo "  INFO Running docker login ghcr.io -u [REDACTED] -p [REDACTED]"
+  [[ "${KAMAL_CLI_TEST_LOGIN_FAIL:-}" == "1" ]] && { echo "ERROR login denied"; exit 1; }
+  exit 0
+fi
 printf '%s\n' "$@" > "$dir/argv"
 cat > "$dir/stdin"
 if [[ -n "${KAMAL_CLI_TEST_LINES:-}" ]]; then
