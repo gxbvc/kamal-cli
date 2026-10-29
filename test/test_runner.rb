@@ -183,6 +183,13 @@ abort out unless code == 1 && out.include?("registry login before redeploy FAILE
 ENV.delete("KAMAL_CLI_TEST_LOGIN_FAIL")
 login_calls.call; logout_calls.call
 
+# law app: no login-first (Gov logs in with the read-only token itself)
+File.write("config/deploy.yml", "servers:\n  web:\n    - 65.108.76.113\n")
+out, _err, code = run_cli(cli, "redeploy")
+abort out unless code == 0 && login_calls.call.empty? && out.include?("registry_logout: skipped (law)")
+File.write("config/deploy.yml", "")
+logout_calls.call
+
 # Law: no logout when the law server shows up in deploy.yml, the destination
 # file, the args or the deploy log
 law = "65.108.76.113"

@@ -130,7 +130,8 @@ def deploy(command, args)
   started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   # deploy (with a remote builder), redeploy and rollback did not log in on Oct 29; every run now ends with a logout,
   # so log in first (Mac and hosts). setup and accessory boot log in themselves.
-  if LOGIN_FIRST_COMMANDS.include?(command) && ENV["KAMAL_CLI_REGISTRY_LOGOUT"] != "0"
+  # Never for law: Gov's packet logs in with the read-only token and logs out itself (Security, Oct 29).
+  if LOGIN_FIRST_COMMANDS.include?(command) && ENV["KAMAL_CLI_REGISTRY_LOGOUT"] != "0" && !law_config?(args)
     # The login output carries registry text: it goes to a Tempfile that is never printed and is deleted.
     ok = Tempfile.create("kamal-cli-login") { |t| system(*kamal, "registry", "login", *config_flags(args), in: File::NULL, out: t, err: [:child, :out]) }
     unless ok
@@ -266,6 +267,13 @@ end
 
 # Fails closed: the law IP in the args, the deploy config (base, destination
 # or -c file) or the deploy log (Kamal names each host it ran on) means law.
+def law_config?(args)
+  dummy = Tempfile.new("kamal-cli-nolog")
+  law_deploy?(args, dummy.path)
+ensure
+  dummy&.close!
+end
+
 def law_deploy?(args, log)
   flags = config_flags(args)
   value = lambda do |short, long|
