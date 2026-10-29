@@ -14,6 +14,8 @@ File.write(File.join(app, "config", "deploy.yml"), "")
 FileUtils.cp(File.join(root, "test", "script.rb"), File.join(app, "script.rb"))
 Dir.chdir(app)
 
+ENV["KAMAL_CLI_REGISTRY_LOGOUT"] = "0" # the early tests check plain deploy output; logout is tested below
+
 def run_cli(cli, *args)
   stdout, stderr, status = Open3.capture3(cli, *args)
   [stdout, stderr, status.exitstatus]
@@ -109,50 +111,50 @@ logout_calls = lambda do
   FileUtils.rm_f(logout_argv)
   calls
 end
-abort "logout ran without KAMAL_CLI_REGISTRY_LOGOUT=1" unless logout_calls.call.empty? # the tests above ran with no env
+abort "logout ran with KAMAL_CLI_REGISTRY_LOGOUT=0" unless logout_calls.call.empty? # the tests above ran with 0
 
-# Off by default: no env (or not "1") means no logout call
-[nil, "0", "true"].each do |val|
+# Only "0" turns it off
+out, _err, code = run_cli(cli, "deploy")
+abort out unless code == 0 && logout_calls.call.empty? && !out.include?("registry_logout")
+# On by default (Security, Oct 29): no env, "1" or anything else but "0" logs out, the Mac too (no -L)
+[nil, "1", "true"].each do |val|
   val ? ENV["KAMAL_CLI_REGISTRY_LOGOUT"] = val : ENV.delete("KAMAL_CLI_REGISTRY_LOGOUT")
   out, _err, code = run_cli(cli, "deploy")
-  abort out unless code == 0 && logout_calls.call.empty? && !out.include?("registry_logout")
+  abort out unless code == 0 && logout_calls.call == %w[exec kamal registry logout] && out.include?("registry_logout")
 end
-ENV["KAMAL_CLI_REGISTRY_LOGOUT"] = "1"
+ENV.delete("KAMAL_CLI_REGISTRY_LOGOUT")
 
 no_registry_text = ->(o) { abort o if o.include?("ghcr.io") || o.include?("REGISTRY-SECRET") || o.include?("docker logout") }
 
-%w[deploy redeploy rollback].each do |cmd|
+%w[deploy redeploy rollback setup accessory].each do |cmd|
   out, _err, code = run_cli(cli, cmd, "-d", "staging", "--version", "abc")
   abort out unless code == 0
   calls = logout_calls.call
-  abort calls.inspect unless calls == %w[exec kamal registry logout -L -d staging]
+  abort calls.inspect unless calls == %w[exec kamal registry logout -d staging]
   abort out unless out.include?('kamal-cli: registry_logout: {"status":"ok","hosts":["104.131.24.46","10.0.0.2"]}')
   no_registry_text.call(out)
 end
 
-# setup never logs out
-out, _err, code = run_cli(cli, "setup")
-abort out unless code == 0 && logout_calls.call.empty? && !out.include?("registry_logout")
 
 # -c and --destination= pass through
 out, _err, code = run_cli(cli, "deploy", "-c", "config/other.yml", "--destination=prod")
 abort out unless code == 0
 calls = logout_calls.call
-abort calls.inspect unless calls == %w[exec kamal registry logout -L -c config/other.yml --destination=prod]
+abort calls.inspect unless calls == %w[exec kamal registry logout -c config/other.yml --destination=prod]
 
 # A failed logout is reported and the deploy still counts as ok
 ENV["KAMAL_CLI_TEST_LOGOUT_FAIL"] = "1"
 out, _err, code = run_cli(cli, "redeploy")
 abort out unless code == 0 && out.include?("redeploy ok")
-abort out unless logout_calls.call == %w[exec kamal registry logout -L] # one call, no retry
+abort out unless logout_calls.call == %w[exec kamal registry logout] # one call, no retry
 abort out unless out.include?('kamal-cli: registry_logout: {"status":"failed","hosts":["104.131.24.46","10.0.0.2"],"exit":1,"failed_hosts":["10.0.0.2"]}')
 no_registry_text.call(out)
 ENV.delete("KAMAL_CLI_TEST_LOGOUT_FAIL")
 
-# A failed deploy runs no logout
+# A failed deploy still logs out (a failed run may have logged in), and keeps its exit code
 ENV["KAMAL_CLI_TEST_FAIL"] = "1"
 out, _err, code = run_cli(cli, "deploy")
-abort out unless code == 17 && logout_calls.call.empty? && !out.include?("registry_logout")
+abort out unless code == 17 && logout_calls.call == %w[exec kamal registry logout] && out.include?("registry_logout")
 ENV.delete("KAMAL_CLI_TEST_FAIL")
 
 # Law: no logout when the law server shows up in deploy.yml, the destination
@@ -176,9 +178,9 @@ end
 # Another destination's file with the law IP does not block a non-law deploy
 File.write("config/deploy.law.yml", "servers:\n  - #{law}\n")
 out, _err, code = run_cli(cli, "deploy", "-d", "staging")
-abort out unless code == 0 && logout_calls.call == %w[exec kamal registry logout -L -d staging]
+abort out unless code == 0 && logout_calls.call == %w[exec kamal registry logout -d staging]
 FileUtils.rm_f("config/deploy.law.yml")
-ENV.delete("KAMAL_CLI_REGISTRY_LOGOUT")
+ENV["KAMAL_CLI_REGISTRY_LOGOUT"] = "0"
 
 # gxbee builder guard (Security, Oct 28 #4700): refuse before kamal runs.
 allow = File.join(dir, "app-allowlist.md")

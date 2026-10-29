@@ -13,7 +13,7 @@ require "tmpdir"
 USAGE = <<~TEXT
   Usage:
     kamal-cli runner FILE.rb
-    kamal-cli deploy|redeploy|rollback|setup [KAMAL ARGS...]
+    kamal-cli deploy|redeploy|rollback|setup|accessory [KAMAL ARGS...]
 
   Run from a Rails app cwd (needs config/deploy.yml).
   runner pipes FILE to:
@@ -21,7 +21,7 @@ USAGE = <<~TEXT
   deploy and redeploy run `bundle exec kamal deploy|redeploy ARGS` and save
   the whole log to a file. On success they print the last 30 lines and the
   log path. On failure they print the whole log. The exit code is Kamal's.
-  rollback and setup run the same way.
+  rollback, setup and accessory (e.g. `accessory reboot NAME`) run the same way.
 
   Every deploy, redeploy, rollback and setup (ok or failed) writes one SOC 2
   deploy line with hq bin/soc2-event (app, command, result, commit, dirty
@@ -29,16 +29,17 @@ USAGE = <<~TEXT
   and keeps a copy of the log in ~/projects/hq/state/deploy-logs (0700, not
   committed). A failure there never changes the exit code.
 
-  With KAMAL_CLI_REGISTRY_LOGOUT=1 (off by default for now), after a good
-  deploy, redeploy or rollback it runs
-  `kamal registry logout -L` (hosts only, never this Mac) with the same
-  -d/-c flags, and prints one line: registry_logout status and host names.
+  After every deploy, redeploy, rollback, setup or accessory command (ok or
+  failed) it runs `kamal registry logout` (the hosts AND this Mac) with the
+  same -d/-c flags, and prints one line: registry_logout status and host
+  names. Security, Oct 29: no registry login may stay on a host or the Mac.
+  Set KAMAL_CLI_REGISTRY_LOGOUT=0 to skip it (say why in the approval ref).
   A failed logout never changes the exit code. Apps on the law server
   (65.108.76.113) are skipped: "registry_logout: skipped (law)".
 TEXT
 
-DEPLOY_COMMANDS = %w[deploy redeploy rollback setup].freeze
-LOGOUT_COMMANDS = %w[deploy redeploy rollback].freeze
+DEPLOY_COMMANDS = %w[deploy redeploy rollback setup accessory].freeze
+LOGOUT_COMMANDS = %w[deploy redeploy rollback setup accessory].freeze
 LAW_HOSTS = %w[65.108.76.113].freeze
 SOC2_EVENT = ENV["KAMAL_CLI_SOC2_EVENT"] || File.join(Dir.home, "projects/hq/bin/soc2-event")
 KEEP_LOG_DIR = ENV["KAMAL_CLI_KEEP_LOG_DIR"] || File.join(Dir.home, "projects/hq/state/deploy-logs")
@@ -138,7 +139,7 @@ def deploy(command, args)
     $stdout.puts "kamal-cli: #{command} FAILED (exit #{status}). Full log: #{log}"
   end
   record_deploy(command, status, log, seconds)
-  if status.zero? && LOGOUT_COMMANDS.include?(command) && ENV["KAMAL_CLI_REGISTRY_LOGOUT"] == "1"
+  if LOGOUT_COMMANDS.include?(command) && ENV["KAMAL_CLI_REGISTRY_LOGOUT"] != "0"
     registry_logout(kamal, args, log)
   end
   status
@@ -189,8 +190,8 @@ end
 
 # Security, Oct 28: the deploy writes the registry password into each host's
 # ~/.docker/config.json. After a good deploy the pull is done, so log the hosts
-# out. Off unless KAMAL_CLI_REGISTRY_LOGOUT=1 until the first live use on one
-# app. -L keeps this Mac logged in for the next push. Never changes the exit
+# out. Oct 29 (Security): on by default, after ok AND failed runs, and this Mac
+# too (no -L): the next push logs in again by itself. Never changes the exit
 # code, no retry, and only host names and ok/failed are printed (the output
 # carries registry text).
 def registry_logout(kamal, args, log)
@@ -200,7 +201,7 @@ def registry_logout(kamal, args, log)
   end
   out = Tempfile.new("kamal-cli-logout")
   begin
-    system(*kamal, "registry", "logout", "-L", *config_flags(args), in: File::NULL, out: out, err: [:child, :out])
+    system(*kamal, "registry", "logout", *config_flags(args), in: File::NULL, out: out, err: [:child, :out])
     status = $?.nil? ? 1 : $?.exitstatus
     text = File.read(out.path)
   ensure
