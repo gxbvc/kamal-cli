@@ -279,6 +279,8 @@ abort "rollback refused on a dirty tree: #{out}" unless code == 0 && ran
 ENV["KAMAL_CLI_ALLOW_DIRTY"] = "1"
 out, code, ran = run_dirty.call("deploy")
 abort "override did not run: #{out}" unless code == 0 && ran
+soc2_last = File.readlines(File.join(dir, "soc2-argv")).map(&:chomp) rescue []
+abort "override not in the soc2 line: #{soc2_last.inspect}" unless soc2_last.any? { |a| a.include?("+dirty dirty-override") }
 ENV.delete("KAMAL_CLI_ALLOW_DIRTY")
 File.delete("uncommitted.rb")
 FileUtils.rm_rf(".git")

@@ -331,6 +331,8 @@ def record_deploy(command, status, log, seconds)
   sha = IO.popen(["git", "rev-parse", "--short=8", "HEAD"], err: File::NULL, &:read).to_s.strip
   sha = "nogit" if sha.empty?
   dirty = IO.popen(["git", "status", "--porcelain"], err: File::NULL, &:read).to_s.strip.empty? ? "" : "+dirty"
+  # Security, Oct 29: each use of the dirty-tree override is named in the line (the reason is the approval ref).
+  dirty += " dirty-override" if !dirty.empty? && DIRTY_CHECK_COMMANDS.include?(command) && ENV["KAMAL_CLI_ALLOW_DIRTY"] == "1"
   result = status.zero? ? "ok" : "FAILED exit #{status}"
   ref = ENV["KAMAL_APPROVAL_REF"].to_s.strip
   ref = "none" if ref.empty?
