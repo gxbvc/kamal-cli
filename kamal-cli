@@ -12,12 +12,15 @@ require "tmpdir"
 
 USAGE = <<~TEXT
   Usage:
-    kamal-cli runner FILE.rb
+    kamal-cli runner [-c CONFIG.yml] [-d DESTINATION] FILE.rb
     kamal-cli deploy|redeploy|rollback|setup|accessory [KAMAL ARGS...]
 
   Run from a Rails app cwd (needs config/deploy.yml).
   runner pipes FILE to:
-    bundle exec kamal app exec --interactive --reuse -- bin/rails runner -
+    bundle exec kamal app exec [-c ...] [-d ...] --interactive --reuse -- bin/rails runner -
+  Without -c it reads config/deploy.yml, which in some apps is staging: pass
+  -c config/deploy.production.yml (or -d) to reach production. The result has
+  the host it ran on; check it.
   deploy and redeploy run `bundle exec kamal deploy|redeploy ARGS` and save
   the whole log to a file. On success they print the last 30 lines and the
   log path. On failure they print the whole log. The exit code is Kamal's.
@@ -75,10 +78,13 @@ def strip_chatter(text)
   [lines.join, host]
 end
 
-def runner(path)
+def runner(path, flags = [])
   unless File.file?("config/deploy.yml")
     return emit_err("run from a Rails app cwd (missing config/deploy.yml)", "NOT_RAILS_APP_CWD")
   end
+  i = flags.index("-c") || flags.index("--config-file")
+  config = i ? flags[i + 1] : flags.find { |f| f.start_with?("--config-file=") }&.split("=", 2)&.last
+  return emit_err("config file not found: #{config}", "NOT_FOUND") if config && !File.file?(config)
   unless File.file?(path)
     return emit_err("file not found: #{path}", "NOT_FOUND")
   end
@@ -89,7 +95,7 @@ def runner(path)
     bundle = ENV["KAMAL_CLI_BUNDLE"] || "bundle"
     File.open(path, "r") do |stdin_file|
       system(
-        bundle, "exec", "kamal", "app", "exec",
+        bundle, "exec", "kamal", "app", "exec", *flags,
         "--interactive", "--reuse", "--",
         "bin/rails", "runner", "-",
         in: stdin_file,
@@ -339,10 +345,13 @@ def main(argv)
     return 0
   end
   return deploy(argv[0], argv[1..]) if DEPLOY_COMMANDS.include?(argv[0])
-  unless argv[0] == "runner" && argv[1]
-    return emit_err("usage: kamal-cli runner FILE.rb", "USAGE")
+  args = argv[1..] || []
+  flags = config_flags(args)
+  rest = args - flags
+  unless argv[0] == "runner" && rest.size == 1
+    return emit_err("usage: kamal-cli runner [-c CONFIG.yml] [-d DESTINATION] FILE.rb", "USAGE")
   end
-  runner(argv[1])
+  runner(rest[0], flags)
 end
 
 exit(main(ARGV))

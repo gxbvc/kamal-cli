@@ -41,6 +41,18 @@ got = File.read(File.join(dir, "stdin"))
 want = File.read("script.rb")
 abort [got, want].inspect unless got == want
 
+# runner -c: the config flag goes to kamal app exec; a missing config file is refused
+File.write("config/deploy.production.yml", "service: x\n")
+out, _err, code = run_cli(cli, "runner", "-c", "config/deploy.production.yml", "script.rb")
+abort out unless code == 0 && JSON.parse(out)["ok"] == true
+parts = File.read(File.join(dir, "argv")).split
+abort parts.inspect unless parts[0, 8] == %w[exec kamal app exec -c config/deploy.production.yml --interactive --reuse]
+out, _err, code = run_cli(cli, "runner", "-c", "config/deploy.nope.yml", "script.rb")
+abort out unless code == 1 && JSON.parse(out)["code"] == "NOT_FOUND"
+out, _err, code = run_cli(cli, "runner", "-c", "config/deploy.production.yml")
+abort out unless code == 1 && JSON.parse(out)["code"] == "USAGE"
+File.delete("config/deploy.production.yml")
+
 ENV["KAMAL_CLI_TEST_FAIL"] = "1"
 out, _err, code = run_cli(cli, "runner", "script.rb")
 payload = JSON.parse(out)
