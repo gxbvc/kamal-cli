@@ -259,6 +259,30 @@ ENV.delete("DOCKER_HOST")
 ENV.delete("KAMAL_CLI_GXBEE_ALLOWLIST")
 File.write("config/deploy.yml", "")
 
+# Dirty tree (Security, Oct 29): deploy, redeploy and setup refuse; rollback does not build, so it runs.
+system("git", "init", "-q", ".") || abort("git init")
+system("git", "add", "-A") && system("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base") || abort("git commit")
+run_dirty = lambda do |cmd|
+  FileUtils.rm_f(argv_file)
+  out, _err, code = run_cli(cli, cmd)
+  [out, code, File.exist?(argv_file)]
+end
+out, code, ran = run_dirty.call("deploy")
+abort "clean tree refused: #{out}" unless code == 0 && ran
+File.write("uncommitted.rb", "x")
+%w[deploy redeploy setup].each do |cmd|
+  out, code, ran = run_dirty.call(cmd)
+  abort "dirty #{cmd} ran: #{out}" unless code == 1 && JSON.parse(out)["code"] == "DIRTY_TREE" && out.include?("1 changed or untracked") && !ran
+end
+out, code, ran = run_dirty.call("rollback")
+abort "rollback refused on a dirty tree: #{out}" unless code == 0 && ran
+ENV["KAMAL_CLI_ALLOW_DIRTY"] = "1"
+out, code, ran = run_dirty.call("deploy")
+abort "override did not run: #{out}" unless code == 0 && ran
+ENV.delete("KAMAL_CLI_ALLOW_DIRTY")
+File.delete("uncommitted.rb")
+FileUtils.rm_rf(".git")
+
 Dir.chdir(dir)
 out, _err, code = run_cli(cli, "deploy")
 payload = JSON.parse(out)

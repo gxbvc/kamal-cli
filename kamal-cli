@@ -39,6 +39,12 @@ USAGE = <<~TEXT
   Set KAMAL_CLI_REGISTRY_LOGOUT=0 to skip it (say why in the approval ref).
   A failed logout never changes the exit code. Apps on the law server
   (65.108.76.113) are skipped: "registry_logout: skipped (law)".
+
+  deploy, redeploy and setup refuse to run when `git status --porcelain`
+  shows any change or untracked file (Kamal would build and ship it, image
+  tag _uncommitted_). Deploy from a clean worktree at a named commit.
+  Override: KAMAL_CLI_ALLOW_DIRTY=1 (say why in KAMAL_APPROVAL_REF).
+  Security, Oct 29, after a dirty-checkout Mailer deploy.
 TEXT
 
 DEPLOY_COMMANDS = %w[deploy redeploy rollback setup accessory].freeze
@@ -126,6 +132,8 @@ def deploy(command, args)
   end
   refusal = gxbee_builder_refusal(args)
   return emit_err(refusal, "GXBEE_BUILDER_REFUSED") if refusal
+  refusal = dirty_tree_refusal(command)
+  return emit_err(refusal, "DIRTY_TREE") if refusal
 
   log_dir = File.join(Dir.tmpdir, "kamal-cli")
   FileUtils.mkdir_p(log_dir)
@@ -192,6 +200,20 @@ def gxbee_builder_refusal(args)
   allowed ? nil : "gxbee builder refused: #{service} is not ALLOWED in app-allowlist.md"
 rescue StandardError => e
   "gxbee builder refused: check failed (#{e.class})"
+end
+
+# Security, Oct 29: a deploy from a dirty checkout shipped 3 unreviewed files (Mailer 2fc52a7_uncommitted).
+# Commands that build an image refuse a tree with changes or untracked files. Outside a git repo: no check.
+DIRTY_CHECK_COMMANDS = %w[deploy redeploy setup].freeze
+
+def dirty_tree_refusal(command)
+  return nil unless DIRTY_CHECK_COMMANDS.include?(command)
+  return nil if ENV["KAMAL_CLI_ALLOW_DIRTY"] == "1"
+  out, status = Open3.capture2("git", "status", "--porcelain", err: File::NULL)
+  return nil unless status.success? && !out.strip.empty?
+  "#{command} refused: the git tree has #{out.lines.size} changed or untracked path(s), and Kamal would ship them " \
+    "(image tag _uncommitted_). Commit, or deploy from a clean worktree at a named commit. " \
+    "Override: KAMAL_CLI_ALLOW_DIRTY=1 (say why in KAMAL_APPROVAL_REF)."
 end
 
 # config/deploy.yml plus the -c file and the -d destination file, when present.
